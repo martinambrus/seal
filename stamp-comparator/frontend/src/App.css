@@ -794,6 +794,43 @@ body {
   }
 }
 
+/* Magnifying Glass Component Styles */
+.magnifying-glass-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 15px;
+  background: white;
+  padding: 15px;
+  border-radius: 12px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+  border: 2px solid #667eea;
+}
+
+.magnifier-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.magnifier-pane h4 {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #374151;
+  text-align: center;
+  font-weight: 600;
+}
+
+.magnifier-canvas {
+  display: block;
+  border: 2px solid #e5e7eb;
+  border-radius: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  background: #f9fafb;
+}
+
 @media (max-width: 768px) {
   .upload-section {
     grid-template-columns: 1fr;
