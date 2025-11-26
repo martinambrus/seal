@@ -1,32 +1,62 @@
 import React, { useState, useEffect } from 'react';
+import { ImageUploader } from './components/ImageUploader';
+import { ImageViewer } from './components/ImageViewer';
+import { MagnifyingGlass } from './components/MagnifyingGlass';
+import { MethodControls } from './components/MethodControls';
+import { ViewModeSelector } from './components/ViewModeSelector';
+import { ResultsPanel } from './components/ResultsPanel';
 import { api } from './services/api';
 import './App.css';
 
 function App() {
-    const [referenceImage, setReferenceImage] = useState(null);
-    const [testImage, setTestImage] = useState(null);
+    // Image state
+    const [referenceFile, setReferenceFile] = useState(null);
+    const [testFile, setTestFile] = useState(null);
     const [referencePreview, setReferencePreview] = useState(null);
     const [testPreview, setTestPreview] = useState(null);
+
+    // Configuration state
     const [config, setConfig] = useState(null);
+    const [enabledMethods, setEnabledMethods] = useState({
+        ssim: true,
+        pixel_diff: true,
+        color: true,
+        edge: true,
+        ocr: true,
+        siamese: false,
+        cnn: false,
+        autoencoder: false
+    });
+    const [thresholds, setThresholds] = useState({
+        ssim: 0.95,
+        pixel_diff: 0.20,
+        color: 0.25,
+        edge: 0.15,
+        ocr: 0.80,
+        siamese: 0.90,
+        cnn: 0.75,
+        autoencoder: 0.30
+    });
+    const [displayThreshold, setDisplayThreshold] = useState(0.30);
+
+    // Results state
     const [results, setResults] = useState(null);
-    const [loading, setLoading] = useState(false);
+    const [processing, setProcessing] = useState(false);
     const [error, setError] = useState(null);
-    const [backendStatus, setBackendStatus] = useState('checking');
 
+    // View state
+    const [viewMode, setViewMode] = useState('combined');
+    const [currentDifferenceOverlay, setCurrentDifferenceOverlay] = useState(null);
+
+    // Magnifier state
+    const [magnifierPosition, setMagnifierPosition] = useState(null);
+    const [magnifierVisible, setMagnifierVisible] = useState(false);
+    const [magnifierZoom, setMagnifierZoom] = useState(3);
+
+    // Load default configuration on mount
     useEffect(() => {
-        // Load default config on mount
         loadDefaultConfig();
-        checkBackendHealth();
     }, []);
-
-    const checkBackendHealth = async () => {
-        try {
-            await api.healthCheck();
-            setBackendStatus('connected');
-        } catch (err) {
-            setBackendStatus('disconnected');
-        }
-    };
 
     const loadDefaultConfig = async () => {
         try {
@@ -34,219 +64,311 @@ function App() {
             setConfig(defaultConfig);
         } catch (err) {
             console.error('Failed to load default config:', err);
-            setError('Failed to load configuration');
+            // Use hardcoded defaults if API fails
+            setConfig({
+                alignment: { method: 'orb', min_quality: 0.7 },
+                upsampling: { enabled: false, method: 'bicubic', factor: 2 },
+                methods: {
+                    ssim: { enabled: true, threshold: 0.95 },
+                    pixel_diff: { enabled: true, threshold: 0.20 },
+                    color: { enabled: true, threshold: 0.25 },
+                    edge: { enabled: true, threshold: 0.15 },
+                    ocr: { enabled: true, threshold: 0.80 },
+                    siamese: { enabled: false, threshold: 0.90 },
+                    cnn: { enabled: false, threshold: 0.75 },
+                    autoencoder: { enabled: false, threshold: 0.30 }
+                },
+                display: { threshold: displayThreshold, view_mode: 'combined' }
+            });
         }
     };
 
-    const handleImageUpload = (file, type) => {
-        if (!file) return;
+    const handleReferenceImageSelected = (file, preview) => {
+        setReferenceFile(file);
+        setReferencePreview(preview);
+        setResults(null); // Clear previous results
+    };
 
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            if (type === 'reference') {
-                setReferenceImage(file);
-                setReferencePreview(e.target.result);
-            } else {
-                setTestImage(file);
-                setTestPreview(e.target.result);
-            }
-        };
-        reader.readAsDataURL(file);
+    const handleTestImageSelected = (file, preview) => {
+        setTestFile(file);
+        setTestPreview(preview);
+        setResults(null);
+    };
+
+    const handleMethodToggle = (methodName, enabled) => {
+        setEnabledMethods(prev => ({
+            ...prev,
+            [methodName]: enabled
+        }));
+    };
+
+    const handleThresholdChange = (methodName, value) => {
+        setThresholds(prev => ({
+            ...prev,
+            [methodName]: value
+        }));
+    };
+
+    const handleDisplayThresholdChange = (value) => {
+        setDisplayThreshold(value);
+    };
+
+    const handleViewModeChange = (mode) => {
+        setViewMode(mode);
+        updateDifferenceOverlay(mode, results);
     };
 
     const handleCompare = async () => {
-        if (!referenceImage || !testImage || !config) {
-            setError('Please upload both images');
+        if (!referenceFile || !testFile) {
+            setError('Please upload both reference and test images');
             return;
         }
 
-        setLoading(true);
+        setProcessing(true);
         setError(null);
-        setResults(null);
 
         try {
-            const result = await api.compareStamps(referenceImage, testImage, config);
+            // Build configuration
+            const comparisonConfig = {
+                alignment: config?.alignment || { method: 'orb', min_quality: 0.7 },
+                upsampling: config?.upsampling || { enabled: false, method: 'bicubic', factor: 2 },
+                methods: Object.fromEntries(
+                    Object.entries(enabledMethods).map(([method, enabled]) => [
+                        method,
+                        { enabled, threshold: thresholds[method] }
+                    ])
+                ),
+                display: {
+                    threshold: displayThreshold,
+                    view_mode: viewMode
+                }
+            };
+
+            // Call API
+            const result = await api.compareStamps(referenceFile, testFile, comparisonConfig);
 
             if (result.success) {
                 setResults(result);
+                updateDifferenceOverlay(viewMode, result);
             } else {
                 setError(result.error || 'Comparison failed');
             }
         } catch (err) {
             console.error('Comparison error:', err);
-            setError(err.response?.data?.error || err.message || 'Comparison failed');
+            setError(`Failed to compare images: ${err.message}`);
         } finally {
-            setLoading(false);
+            setProcessing(false);
         }
     };
 
-    const toggleMethod = (methodName) => {
-        if (!config) return;
+    const updateDifferenceOverlay = (mode, resultData) => {
+        if (!resultData || !resultData.results) {
+            setCurrentDifferenceOverlay(null);
+            return;
+        }
 
-        setConfig({
-            ...config,
-            methods: {
-                ...config.methods,
-                [methodName]: {
-                    ...config.methods[methodName],
-                    enabled: !config.methods[methodName].enabled
-                }
+        // Extract appropriate difference map based on view mode
+        let differenceMap = null;
+
+        if (mode === 'combined' && resultData.results.ensemble) {
+            differenceMap = resultData.results.ensemble.difference_map;
+        } else if (resultData.results[mode]) {
+            differenceMap = resultData.results[mode].difference_map;
+        }
+
+        // Store the raw data (would need conversion to ImageData for actual overlay)
+        setCurrentDifferenceOverlay(differenceMap);
+    };
+
+    const handleMouseMove = (x, y) => {
+        setMagnifierPosition({ x, y });
+        setMagnifierVisible(true);
+    };
+
+    const handleMouseLeave = () => {
+        setMagnifierVisible(false);
+    };
+
+    const handleRegionClick = (region) => {
+        // Center magnifier on clicked region
+        const centerX = region.bbox[0] + region.bbox[2] / 2;
+        const centerY = region.bbox[1] + region.bbox[3] / 2;
+        setMagnifierPosition({ x: centerX, y: centerY });
+        setMagnifierVisible(true);
+    };
+
+    const getMethodStats = () => {
+        if (!results || !results.results) return {};
+
+        const stats = {};
+        Object.entries(results.results).forEach(([method, data]) => {
+            if (data) {
+                stats[method] = {
+                    regions: data.num_regions || 0,
+                    confidence: Math.round((data.overall_score || 0) * 100)
+                };
             }
         });
+
+        return stats;
+    };
+
+    const getAvailableMethods = () => {
+        if (!results || !results.results) return [];
+        return Object.keys(results.results).filter(key => results.results[key]);
     };
 
     return (
-        <div className="App">
+        <div className="app">
             <header className="app-header">
-                <h1>🔍 Stamp Comparator</h1>
-                <div className="status-indicator">
-                    Backend: <span className={`status-${backendStatus}`}>{backendStatus}</span>
-                </div>
+                <h1>🔍 Stamp Comparison Tool</h1>
+                <p>Advanced image analysis for detecting stamp variants and discrepancies</p>
             </header>
 
-            <div className="main-container">
-                {/* Upload Section */}
-                <div className="upload-section">
-                    <div className="upload-box">
-                        <h3>Reference Image</h3>
-                        <input
-                            type="file"
-                            accept="image/*"
-                            onChange={(e) => handleImageUpload(e.target.files[0], 'reference')}
-                            id="reference-upload"
-                        />
-                        <label htmlFor="reference-upload" className="upload-label">
-                            {referencePreview ? (
-                                <img src={referencePreview} alt="Reference" className="preview-image" />
-                            ) : (
-                                <div className="upload-placeholder">
-                                    <span>📁 Upload Reference</span>
-                                </div>
-                            )}
-                        </label>
-                    </div>
+            <div className="app-container">
+                {/* Left Panel: Image Upload */}
+                <div className="upload-panel">
+                    <ImageUploader
+                        label="Reference Stamp"
+                        onImageSelected={handleReferenceImageSelected}
+                        currentImage={referencePreview}
+                    />
+                    <ImageUploader
+                        label="Test Stamp"
+                        onImageSelected={handleTestImageSelected}
+                        currentImage={testPreview}
+                    />
 
-                    <div className="upload-box">
-                        <h3>Test Image</h3>
-                        <input
-                            type="file"
-                            accept="image/*"
-                            onChange={(e) => handleImageUpload(e.target.files[0], 'test')}
-                            id="test-upload"
-                        />
-                        <label htmlFor="test-upload" className="upload-label">
-                            {testPreview ? (
-                                <img src={testPreview} alt="Test" className="preview-image" />
-                            ) : (
-                                <div className="upload-placeholder">
-                                    <span>📁 Upload Test Image</span>
-                                </div>
-                            )}
-                        </label>
-                    </div>
+                    <button
+                        className="compare-button"
+                        onClick={handleCompare}
+                        disabled={!referenceFile || !testFile || processing}
+                    >
+                        {processing ? '⏳ Processing...' : '🔍 Compare Stamps'}
+                    </button>
+
+                    {error && (
+                        <div className="error-message">
+                            <span>⚠️ {error}</span>
+                        </div>
+                    )}
+
+                    {results && results.alignment_quality !== undefined && (
+                        <div className="alignment-info">
+                            <h4>Alignment Quality</h4>
+                            <div className="quality-bar">
+                                <div
+                                    className="quality-fill"
+                                    style={{ width: `${results.alignment_quality}%` }}
+                                />
+                            </div>
+                            <span>{Math.round(results.alignment_quality)}%</span>
+                        </div>
+                    )}
                 </div>
 
-                {/* Controls Section */}
-                {config && (
-                    <div className="controls-section">
-                        <h3>Detection Methods</h3>
-                        <div className="method-toggles">
-                            {Object.entries(config.methods).map(([methodName, methodConfig]) => (
-                                <label key={methodName} className="method-toggle">
+                {/* Center Panel: Image Viewers */}
+                <div className="viewer-panel">
+                    <div className="viewers-container">
+                        <ImageViewer
+                            image={referencePreview}
+                            title="Reference Stamp"
+                            width={400}
+                            height={400}
+                            onMouseMove={handleMouseMove}
+                            onMouseLeave={handleMouseLeave}
+                        />
+
+                        <ImageViewer
+                            image={testPreview}
+                            title="Test Stamp"
+                            width={400}
+                            height={400}
+                            onMouseMove={handleMouseMove}
+                            onMouseLeave={handleMouseLeave}
+                            overlayMask={currentDifferenceOverlay}
+                        />
+                    </div>
+
+                    {results && (
+                        <div className="view-controls">
+                            <div className="threshold-control-main">
+                                <label>
+                                    Display Threshold: <strong>{displayThreshold.toFixed(2)}</strong>
                                     <input
-                                        type="checkbox"
-                                        checked={methodConfig.enabled}
-                                        onChange={() => toggleMethod(methodName)}
+                                        type="range"
+                                        min="0"
+                                        max="1"
+                                        step="0.01"
+                                        value={displayThreshold}
+                                        onChange={(e) => handleDisplayThresholdChange(parseFloat(e.target.value))}
+                                        className="threshold-slider-main"
                                     />
-                                    <span className="method-name">{methodName.toUpperCase()}</span>
                                 </label>
-                            ))}
-                        </div>
-
-                        <button
-                            className="compare-button"
-                            onClick={handleCompare}
-                            disabled={loading || !referenceImage || !testImage}
-                        >
-                            {loading ? 'Comparing...' : 'Compare Images'}
-                        </button>
-                    </div>
-                )}
-
-                {/* Error Display */}
-                {error && (
-                    <div className="error-message">
-                        ⚠️ {error}
-                    </div>
-                )}
-
-                {/* Results Section */}
-                {results && (
-                    <div className="results-section">
-                        <h2>Comparison Results</h2>
-
-                        <div className="results-summary">
-                            <div className="result-card">
-                                <h4>Alignment Quality</h4>
-                                <div className="result-value">{results.alignment_quality.toFixed(2)}%</div>
                             </div>
 
-                            <div className="result-card">
-                                <h4>Execution Time</h4>
-                                <div className="result-value">{results.execution_time.toFixed(2)}s</div>
+                            <div className="magnifier-controls">
+                                <label>
+                                    Magnifier Zoom: <strong>{magnifierZoom}x</strong>
+                                    <input
+                                        type="range"
+                                        min="2"
+                                        max="6"
+                                        step="1"
+                                        value={magnifierZoom}
+                                        onChange={(e) => setMagnifierZoom(parseInt(e.target.value))}
+                                        className="zoom-slider"
+                                    />
+                                </label>
                             </div>
-
-                            {results.results.ensemble && (
-                                <div className="result-card">
-                                    <h4>Differences Found</h4>
-                                    <div className="result-value">{results.results.ensemble.num_regions}</div>
-                                </div>
-                            )}
                         </div>
+                    )}
 
-                        <div className="method-results">
-                            <h3>Method Results</h3>
-                            {Object.entries(results.results).map(([methodName, methodResult]) => (
-                                methodName !== 'ensemble' && methodResult && (
-                                    <div key={methodName} className="method-result-card">
-                                        <h4>{methodName.toUpperCase()}</h4>
-                                        <div className="method-stats">
-                                            <span>Score: {methodResult.overall_score?.toFixed(3)}</span>
-                                            <span>Regions: {methodResult.num_regions}</span>
-                                            <span>Time: {methodResult.execution_time?.toFixed(2)}s</span>
-                                        </div>
-                                    </div>
-                                )
-                            ))}
-                        </div>
+                    {magnifierVisible && referencePreview && testPreview && (
+                        <MagnifyingGlass
+                            referenceImage={referencePreview}
+                            testImage={testPreview}
+                            position={magnifierPosition}
+                            zoomLevel={magnifierZoom}
+                            magnifierSize={200}
+                            visible={magnifierVisible}
+                            differenceMask={currentDifferenceOverlay}
+                        />
+                    )}
+                </div>
 
-                        {results.results.ensemble && (
-                            <div className="ensemble-results">
-                                <h3>Ensemble Analysis</h3>
-                                <div className="ensemble-stats">
-                                    <p><strong>Overall Confidence:</strong> {(results.results.ensemble.overall_confidence * 100).toFixed(1)}%</p>
-                                    <p><strong>Methods Used:</strong> {results.results.ensemble.num_methods_used}</p>
-                                    <p><strong>Total Regions:</strong> {results.results.ensemble.num_regions}</p>
-                                </div>
+                {/* Right Panel: Controls and Results */}
+                <div className="control-panel">
+                    <MethodControls
+                        enabledMethods={enabledMethods}
+                        thresholds={thresholds}
+                        onMethodToggle={handleMethodToggle}
+                        onThresholdChange={handleThresholdChange}
+                        processingStatus={processing ? { all: 'processing' } : {}}
+                    />
 
-                                {results.results.ensemble.regions.length > 0 && (
-                                    <div className="regions-list">
-                                        <h4>Detected Regions</h4>
-                                        {results.results.ensemble.regions.slice(0, 5).map((region, idx) => (
-                                            <div key={idx} className="region-item">
-                                                <span>Region {idx + 1}</span>
-                                                <span>Confidence: {(region.confidence * 100).toFixed(1)}%</span>
-                                                <span>Area: {region.area_pixels}px</span>
-                                                <span>Detected by: {region.detected_by.join(', ')}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                )}
+                    {results && (
+                        <>
+                            <ViewModeSelector
+                                currentView={viewMode}
+                                onViewChange={handleViewModeChange}
+                                availableMethods={getAvailableMethods()}
+                                methodStats={getMethodStats()}
+                            />
+
+                            <ResultsPanel
+                                results={results}
+                                currentView={viewMode}
+                                onRegionClick={handleRegionClick}
+                            />
+                        </>
+                    )}
+                </div>
             </div>
+
+            <footer className="app-footer">
+                <p>Powered by advanced computer vision and machine learning</p>
+            </footer>
         </div>
     );
 }
