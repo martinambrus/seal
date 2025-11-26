@@ -22,6 +22,11 @@ from backend.utils.fusion import ResultFusion
 from backend.models.comparison_result import ComparisonResult
 from backend.config import ComparisonConfig
 
+# Import ML models
+from backend.ml_models.siamese_inference import create_siamese_analyzer
+from backend.ml_models.cnn_inference import create_cnn_detector
+from backend.ml_models.autoencoder_inference import create_autoencoder_analyzer
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Stamp Comparator API",
@@ -47,12 +52,18 @@ color_analyzer: Optional[ColorAnalyzer] = None
 edge_analyzer: Optional[EdgeAnalyzer] = None
 fusion_engine: Optional[ResultFusion] = None
 
+# ML model instances (loaded if available)
+siamese_analyzer = None
+cnn_detector = None
+autoencoder_analyzer = None
+
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize all processors on startup."""
+    """Initialize all processors and ML models on startup."""
     global aligner, ocr_processor, ssim_analyzer, pixel_diff_analyzer
     global color_analyzer, edge_analyzer, fusion_engine
+    global siamese_analyzer, cnn_detector, autoencoder_analyzer
     
     print("Initializing processors...")
     
@@ -65,9 +76,44 @@ async def startup_event():
         edge_analyzer = EdgeAnalyzer()
         fusion_engine = ResultFusion()
         
-        print("All processors initialized successfully!")
+        print("CV processors initialized successfully!")
     except Exception as e:
         print(f"Error initializing processors: {e}")
+    
+    # Try to load ML models (optional, won't fail if not trained yet)
+    print("Loading ML models...")
+    
+    try:
+        siamese_analyzer = create_siamese_analyzer('models/siamese/siamese_best.pth')
+        if siamese_analyzer:
+            print("  ✓ Siamese network loaded")
+        else:
+            print("  ✗ Siamese network not available")
+    except Exception as e:
+        print(f"  ✗ Could not load Siamese network: {e}")
+        siamese_analyzer = None
+    
+    try:
+        cnn_detector = create_cnn_detector('models/cnn_detector/cnn_detector_best.pth')
+        if cnn_detector:
+            print("  ✓ CNN detector loaded")
+        else:
+            print("  ✗ CNN detector not available")
+    except Exception as e:
+        print(f"  ✗ Could not load CNN detector: {e}")
+        cnn_detector = None
+    
+    try:
+        autoencoder_analyzer = create_autoencoder_analyzer('models/autoencoder/autoencoder_best.pth')
+        if autoencoder_analyzer:
+            print("  ✓ Autoencoder loaded")
+        else:
+            print("  ✗ Autoencoder not available")
+    except Exception as e:
+        print(f"  ✗ Could not load Autoencoder: {e}")
+        autoencoder_analyzer = None
+    
+    print("Startup complete!")
 
 
 def process_uploaded_image(file: UploadFile) -> np.ndarray:
@@ -327,10 +373,47 @@ async def compare_images(
         else:
             ocr_result = None
         
-        # ML methods (placeholders for now)
+        # ML methods (if enabled and available)
         siamese_result = None
+        if comparison_config.methods.siamese.enabled and siamese_analyzer:
+            print("  - Siamese network analysis...")
+            try:
+                siamese_result = siamese_analyzer.analyze(
+                    ref_img, aligned_test,
+                    threshold=comparison_config.methods.siamese.threshold
+                )
+                results['siamese'] = serialize_result(siamese_result)
+            except Exception as e:
+                print(f"    Error: {e}")
+                siamese_result = None
+        
         cnn_result = None
+        if comparison_config.methods.cnn.enabled and cnn_detector:
+            print("  - CNN detector analysis...")
+            try:
+                cnn_result = cnn_detector.analyze(
+                    ref_img, aligned_test,
+                    threshold=comparison_config.methods.cnn.threshold,
+                    min_region_size=10
+                )
+                results['cnn'] = serialize_result(cnn_result)
+            except Exception as e:
+                print(f"    Error: {e}")
+                cnn_result = None
+        
         autoencoder_result = None
+        if comparison_config.methods.autoencoder.enabled and autoencoder_analyzer:
+            print("  - Autoencoder analysis...")
+            try:
+                autoencoder_result = autoencoder_analyzer.analyze(
+                    ref_img, aligned_test,
+                    threshold=comparison_config.methods.autoencoder.threshold,
+                    min_region_size=10
+                )
+                results['autoencoder'] = serialize_result(autoencoder_result)
+            except Exception as e:
+                print(f"    Error: {e}")
+                autoencoder_result = None
         
         # Create ComparisonResult object for fusion
         comparison_result = ComparisonResult(
